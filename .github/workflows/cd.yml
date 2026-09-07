@@ -137,6 +137,7 @@ jobs:
     - name: Build & Test
       run: .github/scripts/build-macos.sh release arm64 && .github/scripts/build-macos.sh release x86_64
     - name: Sign Build
+      if: github.repository == 'solvespace/solvespace'
       run: .github/scripts/sign-macos.sh
       env:
         MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -169,6 +170,7 @@ jobs:
         name: solvespace_web
         path: build/bin/
     - name: Ping solvespace.com
+      if: github.repository == 'solvespace/solvespace'
       env:
         WEB_SITE_PING_KEY: ${{ secrets.PULL_WEBVER_KEY }}
       run: |
@@ -213,7 +215,7 @@ jobs:
       - build_release_windows_x64
       - build_release_windows_openmp_x64
       - build_release_macos
-    if: "!cancelled() && github.event_name == 'release'"
+    if: "!cancelled() && github.event_name == 'release' && github.repository == 'solvespace/solvespace'"
     runs-on: ubuntu-latest
     steps:
     - name: Download All Workflow Artifacts
