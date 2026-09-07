@@ -133,13 +133,17 @@ jobs:
           https://github.com/${UPSTREAM}/pull/${WATCHED_PR}
           and the diff on branch windows-release-ship-cli.
 
-          Prepare a response, and where the maintainer asked for a code change, make it on
-          branch windows-release-ship-cli. Keep the change minimal and confined to
-          .github/scripts/build-windows.sh, .github/workflows/cd.yml and CHANGELOG.md
-          unless the maintainer explicitly asked for something else.
+          windows-release-ship-cli is the BASE for your work and it backs a submitted pull
+          request. Do NOT commit to it, push to it, or force-push it. Put every change on
+          your own new branch and open a pull request against windows-release-ship-cli, so
+          that a human merges it deliberately.
 
-          Do NOT post anything to GitHub yourself. Leave the reply as a draft in your
-          summary for a human to send.
+          Keep the change minimal and confined to .github/scripts/build-windows.sh,
+          .github/workflows/cd.yml and CHANGELOG.md unless the maintainer explicitly asked
+          for something else.
+
+          Do NOT comment on any GitHub issue or pull request. Leave the reply as a draft in
+          your summary for a human to send.
 
           Acceptance: quote each maintainer request verbatim, and next to it state either
           the exact diff hunk that answers it or NOT ADDRESSED with the reason.
@@ -151,6 +155,7 @@ jobs:
             --arg title "Respond to review on ${UPSTREAM}#${WATCHED_PR}" \
             '{prompt: $prompt,
               title: $title,
+              automationMode: "AUTO_CREATE_PR",
               sourceContext: {source: $source,
                               githubRepoContext: {startingBranch: "windows-release-ship-cli"}}}')
 
