@@ -1,0 +1,170 @@
+# Fork-local automation. This file exists only on Foadsf/solvespace and must never
+# be included in a pull request to solvespace/solvespace. Always branch upstream
+# contributions from upstream/master, not from this fork's master.
+name: Fork maintenance
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Report what would happen without pushing or calling Jules'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-maintenance
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: solvespace/solvespace
+  WATCHED_PR: '1771'
+  OWNER: Foadsf
+  DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+
+jobs:
+  maintain:
+    # Never run anywhere but this fork, so a re-fork of this fork stays quiet.
+    if: github.repository == 'Foadsf/solvespace'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Merge upstream master
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream "https://github.com/${UPSTREAM}.git"
+          git fetch --quiet upstream master
+
+          behind=$(git rev-list --count HEAD..upstream/master)
+          echo "behind upstream/master by ${behind} commit(s)"
+          if [ "${behind}" -eq 0 ]; then
+            echo 'already up to date'
+            exit 0
+          fi
+
+          if [ "${DRY_RUN}" = 'true' ]; then
+            echo "DRY RUN: would merge upstream/master and push ${behind} commit(s)"
+            exit 0
+          fi
+
+          # A conflict here should fail the run loudly rather than be papered over.
+          git merge --no-edit upstream/master
+          git push origin HEAD:master
+
+      - name: Dispatch Jules on new review activity for the watched PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+        run: |
+          set -euo pipefail
+          state='.github/fork-state.json'
+          [ -f "${state}" ] || echo '{}' > "${state}"
+          key="pr${WATCHED_PR}"
+          seen=$(jq -r --arg k "${key}" '.[$k] // ""' "${state}")
+
+          # Issue comments and review comments both count as maintainer activity.
+          # Anything authored by the PR owner is our own noise and is excluded.
+          latest=$(
+            {
+              gh api "repos/${UPSTREAM}/issues/${WATCHED_PR}/comments" --paginate \
+                 --jq ".[] | select(.user.login != \"${OWNER}\") | [.id, .user.login] | @tsv"
+              gh api "repos/${UPSTREAM}/pulls/${WATCHED_PR}/comments" --paginate \
+                 --jq ".[] | select(.user.login != \"${OWNER}\") | [.id, .user.login] | @tsv"
+            } | sort -n | tail -1
+          )
+
+          if [ -z "${latest}" ]; then
+            echo 'no maintainer activity yet'
+            exit 0
+          fi
+          id=$(printf '%s' "${latest}" | cut -f1)
+          who=$(printf '%s' "${latest}" | cut -f2)
+          echo "latest maintainer comment id=${id} by ${who}; last handled=${seen:-none}"
+
+          if [ "${id}" = "${seen}" ]; then
+            echo 'already handled'
+            exit 0
+          fi
+
+          if [ "${DRY_RUN}" = 'true' ]; then
+            echo "DRY RUN: would dispatch Jules for comment ${id} by ${who}"
+            exit 0
+          fi
+
+          if [ -z "${JULES_API_KEY}" ]; then
+            echo '::error::JULES_API_KEY is not set on this repository'
+            exit 1
+          fi
+
+          read -r -d '' prompt <<PROMPT || true
+          Ground rules for this task — follow them exactly:
+          1. EVIDENCE. For every factual claim, quote the exact line you relied on with its
+             file path and line number (or document URL). If you cannot find it, write
+             NOT FOUND. Never write "the docs say" without the excerpt.
+          2. NO SEARCH-QUERY SOURCES. A search-engine query URL is not a source. Provenance
+             must be a document URL or file path plus one verbatim quote.
+          3. CONTRADICTIONS. If an acceptance criterion contradicts the spec or the data,
+             say so explicitly and do NOT mark it PASS.
+          4. MEASURE AND JUDGE SEPARATELY. Report the measured value and the verdict as two
+             distinct fields. Never let the verdict stand in for the measurement.
+          5. NEGATIVE CONTROL. Produce an artefact that MUST FAIL the check, run the check
+             on it, and show it failing. If you cannot, the check proves nothing.
+          6. DONE MEANS PROVEN. Do not report done until every acceptance command below
+             exits 0. Paste the actual command output, not a description of it.
+          7. UNCERTAINTY. End with everything you were unsure about or could not verify.
+             An empty list is itself a claim, and I will check it.
+
+          A maintainer commented on ${UPSTREAM} pull request #${WATCHED_PR}, which is open
+          from the branch windows-release-ship-cli in this repository. That PR ships
+          solvespace-cli.exe in the Windows release assets.
+
+          Read the full PR conversation at
+          https://github.com/${UPSTREAM}/pull/${WATCHED_PR}
+          and the diff on branch windows-release-ship-cli.
+
+          Prepare a response, and where the maintainer asked for a code change, make it on
+          branch windows-release-ship-cli. Keep the change minimal and confined to
+          .github/scripts/build-windows.sh, .github/workflows/cd.yml and CHANGELOG.md
+          unless the maintainer explicitly asked for something else.
+
+          Do NOT post anything to GitHub yourself. Leave the reply as a draft in your
+          summary for a human to send.
+
+          Acceptance: quote each maintainer request verbatim, and next to it state either
+          the exact diff hunk that answers it or NOT ADDRESSED with the reason.
+          PROMPT
+
+          payload=$(jq -n \
+            --arg prompt "${prompt}" \
+            --arg source "sources/github/${GITHUB_REPOSITORY}" \
+            --arg title "Respond to review on ${UPSTREAM}#${WATCHED_PR}" \
+            '{prompt: $prompt,
+              title: $title,
+              sourceContext: {source: $source,
+                              githubRepoContext: {startingBranch: "windows-release-ship-cli"}}}')
+
+          code=$(curl -sS -o /tmp/jules.json -w '%{http_code}' \
+                 -X POST 'https://jules.googleapis.com/v1alpha/sessions' \
+                 -H "X-Goog-Api-Key: ${JULES_API_KEY}" \
+                 -H 'Content-Type: application/json' \
+                 -d "${payload}")
+          echo "jules HTTP ${code}"
+          jq -r '.name // .error.message // "no name in response"' /tmp/jules.json
+          [ "${code}" = '200' ]
+
+          jq --arg k "${key}" --arg v "${id}" '.[$k] = $v' "${state}" > "${state}.tmp"
+          mv "${state}.tmp" "${state}"
+          git add "${state}"
+          git commit -m "fork-maintenance: handled ${UPSTREAM}#${WATCHED_PR} comment ${id}"
+          git push origin HEAD:master
